@@ -1,6 +1,6 @@
 import _debug from 'debug'
 import fs from 'fs-extra'
-import path from 'path'
+import path from 'node:path'
 import c from 'picocolors'
 import {
   createLogger,
@@ -10,13 +10,9 @@ import {
   type ConfigEnv
 } from 'vite'
 import { DEFAULT_THEME_PATH } from './alias'
+import type { DefaultTheme } from './defaultTheme'
 import { resolvePages } from './plugins/dynamicRoutesPlugin'
-import {
-  APPEARANCE_KEY,
-  type DefaultTheme,
-  type HeadConfig,
-  type SiteData
-} from './shared'
+import { APPEARANCE_KEY, slash, type HeadConfig, type SiteData } from './shared'
 import type { RawConfigExports, SiteConfig, UserConfig } from './siteConfig'
 
 export { resolvePages } from './plugins/dynamicRoutesPlugin'
@@ -73,12 +69,27 @@ export async function resolveConfig(
     })
   const site = await resolveSiteData(root, userConfig)
   const srcDir = normalizePath(path.resolve(root, userConfig.srcDir || '.'))
+  const assetsDir = userConfig.assetsDir
+    ? slash(userConfig.assetsDir).replace(/^\.?\/|\/$/g, '')
+    : 'assets'
   const outDir = userConfig.outDir
     ? normalizePath(path.resolve(root, userConfig.outDir))
     : resolve(root, 'dist')
   const cacheDir = userConfig.cacheDir
     ? normalizePath(path.resolve(root, userConfig.cacheDir))
     : resolve(root, 'cache')
+
+  const resolvedAssetsDir = normalizePath(path.resolve(outDir, assetsDir))
+  if (!resolvedAssetsDir.startsWith(outDir)) {
+    throw new Error(
+      [
+        `assetsDir cannot be set to a location outside of the outDir.`,
+        `outDir: ${outDir}`,
+        `assetsDir: ${assetsDir}`,
+        `resolved: ${resolvedAssetsDir}`
+      ].join('\n  ')
+    )
+  }
 
   // resolve theme path
   const userThemeDir = resolve(root, 'theme')
@@ -88,12 +99,14 @@ export async function resolveConfig(
 
   const { pages, dynamicRoutes, rewrites } = await resolvePages(
     srcDir,
-    userConfig
+    userConfig,
+    logger
   )
 
   const config: SiteConfig = {
     root,
     srcDir,
+    assetsDir,
     site,
     themeDir,
     pages,
@@ -111,6 +124,7 @@ export async function resolveConfig(
     vite: userConfig.vite,
     shouldPreload: userConfig.shouldPreload,
     mpa: !!userConfig.mpa,
+    metaChunk: !!userConfig.metaChunk,
     ignoreDeadLinks: userConfig.ignoreDeadLinks,
     cleanUrls: !!userConfig.cleanUrls,
     useWebFonts:
@@ -122,7 +136,9 @@ export async function resolveConfig(
     transformHtml: userConfig.transformHtml,
     transformPageData: userConfig.transformPageData,
     rewrites,
-    userConfig
+    userConfig,
+    sitemap: userConfig.sitemap,
+    buildConcurrency: userConfig.buildConcurrency ?? 64
   }
 
   // to be shared with content loaders
@@ -132,7 +148,7 @@ export async function resolveConfig(
   return config
 }
 
-const supportedConfigExtensions = ['js', 'ts', 'cjs', 'mjs', 'cts', 'mts']
+const supportedConfigExtensions = ['js', 'ts', 'mjs', 'mts']
 
 export async function resolveUserConfig(
   root: string,
@@ -180,7 +196,7 @@ async function resolveConfigExtends(
   return resolved
 }
 
-function mergeConfig(a: UserConfig, b: UserConfig, isRoot = true) {
+export function mergeConfig(a: UserConfig, b: UserConfig, isRoot = true) {
   const merged: Record<string, any> = { ...a }
   for (const key in b) {
     const value = b[key as keyof UserConfig]
@@ -225,11 +241,15 @@ export async function resolveSiteData(
     description: userConfig.description || 'A VitePress site',
     base: userConfig.base ? userConfig.base.replace(/([^/])$/, '$1/') : '/',
     head: resolveSiteDataHead(userConfig),
+    router: {
+      prefetchLinks: userConfig.router?.prefetchLinks ?? true
+    },
     appearance: userConfig.appearance ?? true,
     themeConfig: userConfig.themeConfig || {},
     locales: userConfig.locales || {},
-    scrollOffset: userConfig.scrollOffset ?? 90,
-    cleanUrls: !!userConfig.cleanUrls
+    scrollOffset: userConfig.scrollOffset ?? 134,
+    cleanUrls: !!userConfig.cleanUrls,
+    contentProps: userConfig.contentProps
   }
 }
 
@@ -242,22 +262,36 @@ function resolveSiteDataHead(userConfig?: UserConfig): HeadConfig[] {
     // if appearance mode set to light or dark, default to the defined mode
     // in case the user didn't specify a preference - otherwise, default to auto
     const fallbackPreference =
-      userConfig?.appearance !== true ? userConfig?.appearance ?? '' : 'auto'
+      typeof userConfig?.appearance === 'string'
+        ? userConfig?.appearance
+        : typeof userConfig?.appearance === 'object'
+          ? (userConfig.appearance.initialValue ?? 'auto')
+          : 'auto'
 
     head.push([
       'script',
-      { id: 'check-dark-light' },
-      `
-        ;(() => {
-          const preference = localStorage.getItem('${APPEARANCE_KEY}') || '${fallbackPreference}'
-          const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches
-          if (!preference || preference === 'auto' ? prefersDark : preference === 'dark') {
-            document.documentElement.classList.add('dark')
-          }
-        })()
-      `
+      { id: 'check-dark-mode' },
+      fallbackPreference === 'force-dark'
+        ? `document.documentElement.classList.add('dark')`
+        : fallbackPreference === 'force-auto'
+          ? `;(() => {
+               if (window.matchMedia('(prefers-color-scheme: dark)').matches)
+                 document.documentElement.classList.add('dark')
+             })()`
+          : `;(() => {
+               const preference = localStorage.getItem('${APPEARANCE_KEY}') || '${fallbackPreference}'
+               const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches
+               if (!preference || preference === 'auto' ? prefersDark : preference === 'dark')
+                 document.documentElement.classList.add('dark')
+             })()`
     ])
   }
+
+  head.push([
+    'script',
+    { id: 'check-mac-os' },
+    `document.documentElement.classList.toggle('mac', /Mac|iPhone|iPod|iPad/i.test(navigator.platform))`
+  ])
 
   return head
 }

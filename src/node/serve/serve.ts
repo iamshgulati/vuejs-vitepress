@@ -1,8 +1,8 @@
-import compression from 'compression'
+import compression from '@polka/compression'
 import fs from 'fs-extra'
-import path from 'path'
+import path from 'node:path'
 import polka, { type IOptions } from 'polka'
-import sirv, { type RequestHandler } from 'sirv'
+import sirv from 'sirv'
 import { resolveConfig } from '../config'
 
 function trimChar(str: string, char: string) {
@@ -28,7 +28,8 @@ export async function serve(options: ServeOptions = {}) {
   const config = await resolveConfig(options.root, 'serve', 'production')
   const base = trimChar(options?.base ?? config?.site?.base ?? '', '/')
 
-  const notAnAsset = (pathname: string) => !pathname.includes('/assets/')
+  const notAnAsset = (pathname: string) =>
+    !pathname.includes(`/${config.assetsDir}/`)
   const notFound = fs.readFileSync(path.resolve(config.outDir, './404.html'))
   const onNoMatch: IOptions['onNoMatch'] = (req, res) => {
     res.statusCode = 404
@@ -36,7 +37,7 @@ export async function serve(options: ServeOptions = {}) {
     res.end()
   }
 
-  const compress = compression() as RequestHandler
+  const compress = compression({ brotli: true })
   const serve = sirv(config.outDir, {
     etag: true,
     maxAge: 31536000,
