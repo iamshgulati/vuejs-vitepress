@@ -1,10 +1,3 @@
-import { siteDataRef } from './data'
-import {
-  inBrowser,
-  EXTERNAL_URL_RE,
-  sanitizeFileName,
-  type Awaitable
-} from '../shared'
 import {
   h,
   onMounted,
@@ -12,8 +5,15 @@ import {
   shallowRef,
   type AsyncComponentLoader
 } from 'vue'
+import {
+  EXTERNAL_URL_RE,
+  inBrowser,
+  sanitizeFileName,
+  type Awaitable
+} from '../shared'
+import { siteDataRef } from './data'
 
-export { inBrowser } from '../shared'
+export { escapeHtml as _escapeHtml, inBrowser } from '../shared'
 
 /**
  * Join two paths by resolving the slash collision.
@@ -22,8 +22,11 @@ export function joinPath(base: string, path: string) {
   return `${base}${path}`.replace(/\/+/g, '/')
 }
 
+/**
+ * Append base to internal (non-relative) urls
+ */
 export function withBase(path: string) {
-  return EXTERNAL_URL_RE.test(path) || path.startsWith('.')
+  return EXTERNAL_URL_RE.test(path) || !path.startsWith('/')
     ? path
     : joinPath(siteDataRef.value.base, path)
 }
@@ -58,7 +61,7 @@ export function pathToFile(path: string) {
         pageHash = __VP_HASH_MAP__[pagePath.toLowerCase()]
       }
       if (!pageHash) return null
-      pagePath = `${base}assets/${pagePath}.${pageHash}.js`
+      pagePath = `${base}${__ASSETS_DIR__}/${pagePath}.${pageHash}.js`
     } else {
       // ssr build uses much simpler name mapping
       pagePath = `./${sanitizeFileName(
@@ -103,4 +106,37 @@ export function defineClientComponent(
       return () => (comp.value ? h(comp.value, ...(args ?? [])) : null)
     }
   }
+}
+
+export function getScrollOffset() {
+  let scrollOffset = siteDataRef.value.scrollOffset
+  let offset = 0
+  let padding = 24
+  if (typeof scrollOffset === 'object' && 'padding' in scrollOffset) {
+    padding = scrollOffset.padding
+    scrollOffset = scrollOffset.selector
+  }
+  if (typeof scrollOffset === 'number') {
+    offset = scrollOffset
+  } else if (typeof scrollOffset === 'string') {
+    offset = tryOffsetSelector(scrollOffset, padding)
+  } else if (Array.isArray(scrollOffset)) {
+    for (const selector of scrollOffset) {
+      const res = tryOffsetSelector(selector, padding)
+      if (res) {
+        offset = res
+        break
+      }
+    }
+  }
+
+  return offset
+}
+
+function tryOffsetSelector(selector: string, padding: number): number {
+  const el = document.querySelector(selector)
+  if (!el) return 0
+  const bot = el.getBoundingClientRect().bottom
+  if (bot < 0) return 0
+  return bot + padding
 }
